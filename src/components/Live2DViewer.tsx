@@ -2,6 +2,8 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from "react";
 import * as PIXI from "pixi.js";
 import { Ticker } from "@pixi/ticker";
+import { setHappyEmotion, setNeutralEmotion } from "../modules/emotions";
+import { createBlinkAnimator, createGazeAnimator } from "../modules/animation";
 
 type Live2DModelType = typeof import("pixi-live2d-display/lib/cubism4").Live2DModel;
 type ModelOption = { name: string; url: string };
@@ -15,6 +17,8 @@ type BustConfig = {
 };
 
 type ViewMode = "bust" | "full";
+type EmotionId = "neutral" | "happy";
+type EmotionOption = { id: EmotionId; label: string };
 
 const DEFAULT_BUST_CONFIG: BustConfig = {
   scale: 1,
@@ -27,6 +31,10 @@ const DEFAULT_BUST_CONFIG: BustConfig = {
 const CONFIG_STORAGE_KEY = "live2d-bust-config";
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
+const EMOTION_OPTIONS: EmotionOption[] = [
+  { id: "neutral", label: "Neutral" },
+  { id: "happy", label: "Happy" }
+];
 
 declare global {
   interface Window {
@@ -55,6 +63,8 @@ export default function Live2DViewer() {
   const dragStateRef = useRef<{ startY: number; startVisible: number; startOffset: number } | null>(
     null
   );
+  const gazeAnimatorRef = useRef(createGazeAnimator());
+  const blinkAnimatorRef = useRef(createBlinkAnimator());
 
   const normalizeConfig = (cfg?: Partial<BustConfig>): BustConfig => ({
     scale: cfg?.scale ?? DEFAULT_BUST_CONFIG.scale,
@@ -82,6 +92,16 @@ export default function Live2DViewer() {
     persistConfigs(next);
     setDraftConfig(null);
     setIsSettingDefault(false);
+  };
+
+  const applyEmotion = (emotion: EmotionId) => {
+    const model = modelRef.current;
+    if (!model) return;
+    if (emotion === "neutral") {
+      setNeutralEmotion(model);
+    } else if (emotion === "happy") {
+      setHappyEmotion(model);
+    }
   };
 
   const handleWheelAdjust = (e: ReactWheelEvent) => {
@@ -365,6 +385,9 @@ model.internalModel?.focusController?.focus(0, 0, true);
         let attention = 0;
         let state: "idle" | "tracking" = "idle";
         let smoothTarget = { x: 0, y: 0 };
+        let nextGlanceAt = performance.now() + 10000;
+        let glanceEndAt = 0;
+        let glanceTarget = { x: 0, y: 0 };
         const damp = (current: number, target: number, rate: number) =>
           current + (target - current) * rate;
 
@@ -392,62 +415,21 @@ model.internalModel?.focusController?.focus(0, 0, true);
               (containerRect?.top ?? 0) + (containerRect?.height ?? window.innerHeight) / 2 + offset.y;
           }
 
-          const dx = mouseX - centerX;
-          const dy = mouseY - centerY;
-          const distance = Math.hypot(dx, dy);
-          const radius = Math.max(bustConfigRef.current?.trackRadius ?? DEFAULT_BUST_CONFIG.trackRadius, 10);
-          const withinCircle = distance <= radius;
+          const radius = Math.max(
+            bustConfigRef.current?.trackRadius ?? DEFAULT_BUST_CONFIG.trackRadius,
+            10
+          );
 
-          const trackingRange = radius;
-          let x = dx / trackingRange;
-          let y = dy / trackingRange;
+          const blinkOpen = blinkAnimatorRef.current.update(model, delta);
 
-          x = Math.min(Math.max(x, -1), 1);
-          y = Math.min(Math.max(y, -1), 1);
-
-          const now = performance.now();
-          let activeX = 0;
-          let activeY = 0;
-          let targetAttention = 0;
-
-          if (withinCircle) {
-            state = "tracking";
-            targetAttention = 1;
-            activeX = x;
-            activeY = y;
-          } else {
-            if (state === "tracking") {
-              state = "idle";
-            }
-
-            // Chuột ngoài phạm vi: mắt nhìn thẳng, không follow
-            targetAttention = 0;
-            activeX = 0;
-            activeY = 0;
-          }
-
-          // Làm mượt khi ra/vào vùng track để tránh giật
-          const blendSpeed = withinCircle ? 0.08 : 0.05;
-          smoothTarget.x = damp(smoothTarget.x, activeX, blendSpeed * delta);
-          smoothTarget.y = damp(smoothTarget.y, activeY, blendSpeed * delta);
-
-          const speed = (withinCircle ? 0.06 : 0.045) * delta;
-          if (attention < targetAttention) {
-            attention = Math.min(attention + speed, targetAttention);
-          } else {
-            attention = Math.max(attention - speed, targetAttention);
-          }
-
-          const core = model.internalModel.coreModel;
-
-          const headIntensity = 30 * attention;
-          core.setParameterValueById("ParamAngleX", smoothTarget.x * headIntensity);
-          core.setParameterValueById("ParamAngleY", -smoothTarget.y * headIntensity);
-
-          const eyeSensitivity = 0.35 * attention;
-          core.setParameterValueById("ParamEyeBallX", smoothTarget.x * eyeSensitivity);
-          core.setParameterValueById("ParamEyeBallY", -smoothTarget.y * eyeSensitivity);
-          
+          gazeAnimatorRef.current.update({
+            model,
+            delta,
+            center: { x: centerX, y: centerY },
+            mouse: { x: mouseX, y: mouseY },
+            trackRadius: radius,
+            blinkOpen
+          });
         };
 
         app.ticker.add(updateGaze);
@@ -526,6 +508,8 @@ model.internalModel?.focusController?.focus(0, 0, true);
         onStartSetDefault={startSetDefault}
         onConfirmSetDefault={confirmSetDefault}
         onCancelSetDefault={cancelSetDefault}
+        emotions={EMOTION_OPTIONS}
+        onSelectEmotion={applyEmotion}
       />
       {viewMode === "bust" && isSettingDefault && (
         <BustEditorOverlay
@@ -551,6 +535,8 @@ type ControlPanelProps = {
   onStartSetDefault: () => void;
   onConfirmSetDefault: () => void;
   onCancelSetDefault: () => void;
+  emotions: EmotionOption[];
+  onSelectEmotion: (id: EmotionId) => void;
 };
 
 function ControlPanel({
@@ -564,8 +550,12 @@ function ControlPanel({
   isSettingDefault,
   onStartSetDefault,
   onConfirmSetDefault,
-  onCancelSetDefault
+  onCancelSetDefault,
+  emotions,
+  onSelectEmotion
 }: ControlPanelProps) {
+  const [showEmotions, setShowEmotions] = useState(false);
+
   return (
     <div
       style={{
@@ -627,6 +617,58 @@ function ControlPanel({
         style={{ width: 120 }}
       />
       <span style={{ fontSize: 13, minWidth: 42 }}>{Math.round(zoom * 100)}%</span>
+      <div style={{ position: "relative" }}>
+        <button
+          onClick={() => setShowEmotions((prev) => !prev)}
+          style={{
+            background: "#8e44ad",
+            color: "#fff",
+            border: "none",
+            borderRadius: 6,
+            padding: "6px 10px",
+            cursor: "pointer"
+          }}
+        >
+          Emotions
+        </button>
+        {showEmotions && (
+          <div
+            style={{
+              position: "absolute",
+              top: "110%",
+              left: 0,
+              background: "#111",
+              border: "1px solid #555",
+              borderRadius: 8,
+              padding: 8,
+              display: "flex",
+              gap: 6,
+              zIndex: 20
+            }}
+          >
+            {emotions.map((emotion) => (
+              <button
+                key={emotion.id}
+                onClick={() => {
+                  onSelectEmotion(emotion.id);
+                  setShowEmotions(false);
+                }}
+                style={{
+                  background: "#2c3e50",
+                  color: "#fff",
+                  border: "1px solid #555",
+                  borderRadius: 6,
+                  padding: "6px 10px",
+                  cursor: "pointer",
+                  minWidth: 80
+                }}
+              >
+                {emotion.label}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
       {viewMode === "bust" && (
         <>
           <button
