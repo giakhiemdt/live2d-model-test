@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from "react";
 import * as PIXI from "pixi.js";
 import { Ticker } from "@pixi/ticker";
@@ -14,6 +14,8 @@ type BustConfig = {
   trackRadius: number;
 };
 
+type ViewMode = "bust" | "full";
+
 const DEFAULT_BUST_CONFIG: BustConfig = {
   scale: 1,
   visibleFraction: 0.5,
@@ -23,6 +25,8 @@ const DEFAULT_BUST_CONFIG: BustConfig = {
   trackRadius: 240
 };
 const CONFIG_STORAGE_KEY = "live2d-bust-config";
+
+const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
 declare global {
   interface Window {
@@ -35,7 +39,7 @@ export default function Live2DViewer() {
     { name: "jingliu", url: "/model/jingliu/jingliu.model3.json" }
   ]);
   const [selectedModel, setSelectedModel] = useState("/model/jingliu/jingliu.model3.json");
-  const [viewMode, setViewMode] = useState<"bust" | "full">("bust");
+  const [viewMode, setViewMode] = useState<ViewMode>("bust");
   const [modelConfigs, setModelConfigs] = useState<Record<string, BustConfig>>({});
   const [isSettingDefault, setIsSettingDefault] = useState(false);
   const [draftConfig, setDraftConfig] = useState<BustConfig | null>(null);
@@ -51,8 +55,6 @@ export default function Live2DViewer() {
   const dragStateRef = useRef<{ startY: number; startVisible: number; startOffset: number } | null>(
     null
   );
-
-  const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 
   const normalizeConfig = (cfg?: Partial<BustConfig>): BustConfig => ({
     scale: cfg?.scale ?? DEFAULT_BUST_CONFIG.scale,
@@ -361,18 +363,10 @@ model.internalModel?.focusController?.focus(0, 0, true);
         let mouseX = window.innerWidth / 2;
         let mouseY = window.innerHeight / 2;
         let attention = 0;
-        let state: "idle" | "glancing" | "tracking" = "idle";
-        let nextGlanceAt = performance.now() + 15000;
-        let glanceEndsAt = 0;
-        let glanceTarget = { x: 0, y: 0 };
+        let state: "idle" | "tracking" = "idle";
         let smoothTarget = { x: 0, y: 0 };
         const damp = (current: number, target: number, rate: number) =>
           current + (target - current) * rate;
-
-        const scheduleNextGlance = (now: number) => {
-          const interval = 15000 + Math.random() * 10000; // 15-25s
-          nextGlanceAt = now + interval;
-        };
 
         const onMouseMove = (e: MouseEvent) => {
           mouseX = e.clientX;
@@ -500,6 +494,12 @@ model.internalModel?.focusController?.focus(0, 0, true);
     layoutRef.current?.();
   }, [activeBustConfig]);
 
+  const workingConfig = draftConfig ?? activeBustConfig;
+
+  const updateDraftConfig = (partial: Partial<BustConfig>) => {
+    setDraftConfig((prev) => (prev ? { ...prev, ...partial } : prev));
+  };
+
   return (
     <div
       style={{
@@ -514,72 +514,139 @@ model.internalModel?.focusController?.focus(0, 0, true);
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseUp}
     >
-      <div
+      <ControlPanel
+        modelOptions={modelOptions}
+        selectedModel={selectedModel}
+        onSelectModel={setSelectedModel}
+        viewMode={viewMode}
+        onChangeViewMode={setViewMode}
+        zoom={zoom}
+        onChangeZoom={(value) => setZoom(value)}
+        isSettingDefault={isSettingDefault}
+        onStartSetDefault={startSetDefault}
+        onConfirmSetDefault={confirmSetDefault}
+        onCancelSetDefault={cancelSetDefault}
+      />
+      {viewMode === "bust" && isSettingDefault && (
+        <BustEditorOverlay
+          config={workingConfig}
+          crosshairRef={crosshairRef}
+          onChangeConfig={updateDraftConfig}
+        />
+      )}
+      <div ref={canvasRef} style={{ width: "100%", height: "100%" }} />
+    </div>
+  );
+}
+
+type ControlPanelProps = {
+  modelOptions: ModelOption[];
+  selectedModel: string;
+  onSelectModel: (value: string) => void;
+  viewMode: ViewMode;
+  onChangeViewMode: (mode: ViewMode) => void;
+  zoom: number;
+  onChangeZoom: (value: number) => void;
+  isSettingDefault: boolean;
+  onStartSetDefault: () => void;
+  onConfirmSetDefault: () => void;
+  onCancelSetDefault: () => void;
+};
+
+function ControlPanel({
+  modelOptions,
+  selectedModel,
+  onSelectModel,
+  viewMode,
+  onChangeViewMode,
+  zoom,
+  onChangeZoom,
+  isSettingDefault,
+  onStartSetDefault,
+  onConfirmSetDefault,
+  onCancelSetDefault
+}: ControlPanelProps) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        top: 12,
+        left: 12,
+        zIndex: 10,
+        background: "rgba(0,0,0,0.5)",
+        padding: "8px 12px",
+        borderRadius: 8,
+        color: "#fff",
+        display: "flex",
+        alignItems: "center",
+        gap: 8
+      }}
+    >
+      <label style={{ fontSize: 14 }}>Chọn model:</label>
+      <select
+        value={selectedModel}
+        onChange={(e) => onSelectModel(e.target.value)}
         style={{
-          position: "absolute",
-          top: 12,
-          left: 12,
-          zIndex: 10,
-          background: "rgba(0,0,0,0.5)",
-          padding: "8px 12px",
-          borderRadius: 8,
+          background: "#111",
           color: "#fff",
-          display: "flex",
-          alignItems: "center",
-          gap: 8
+          border: "1px solid #555",
+          borderRadius: 6,
+          padding: "6px 8px",
+          minWidth: 180
         }}
       >
-        <label style={{ fontSize: 14 }}>Chọn model:</label>
-        <select
-          value={selectedModel}
-          onChange={(e) => setSelectedModel(e.target.value)}
-          style={{
-            background: "#111",
-            color: "#fff",
-            border: "1px solid #555",
-            borderRadius: 6,
-            padding: "6px 8px",
-            minWidth: 180
-          }}
-        >
-          {modelOptions.map((opt) => (
-            <option key={opt.url} value={opt.url}>
-              {opt.name}
-            </option>
-          ))}
-        </select>
-        <label style={{ fontSize: 14 }}>Khung nhìn:</label>
-        <select
-          value={viewMode}
-          onChange={(e) => setViewMode(e.target.value as "bust" | "full")}
-          style={{
-            background: "#111",
-            color: "#fff",
-            border: "1px solid #555",
-            borderRadius: 6,
-            padding: "6px 8px",
-            minWidth: 130
-          }}
-        >
-          <option value="bust">Bán thân</option>
-          <option value="full">Toàn thân</option>
-        </select>
-        <label style={{ fontSize: 14 }}>Zoom:</label>
-        <input
-          type="range"
-          min={50}
-          max={200}
-          value={Math.round(zoom * 100)}
-          onChange={(e) => setZoom(Number(e.target.value) / 100)}
-          style={{ width: 120 }}
-        />
-        <span style={{ fontSize: 13, minWidth: 42 }}>{Math.round(zoom * 100)}%</span>
-        {viewMode === "bust" && (
-          <>
+        {modelOptions.map((opt) => (
+          <option key={opt.url} value={opt.url}>
+            {opt.name}
+          </option>
+        ))}
+      </select>
+      <label style={{ fontSize: 14 }}>Khung nhìn:</label>
+      <select
+        value={viewMode}
+        onChange={(e) => onChangeViewMode(e.target.value as ViewMode)}
+        style={{
+          background: "#111",
+          color: "#fff",
+          border: "1px solid #555",
+          borderRadius: 6,
+          padding: "6px 8px",
+          minWidth: 130
+        }}
+      >
+        <option value="bust">Bán thân</option>
+        <option value="full">Toàn thân</option>
+      </select>
+      <label style={{ fontSize: 14 }}>Zoom:</label>
+      <input
+        type="range"
+        min={50}
+        max={200}
+        value={Math.round(zoom * 100)}
+        onChange={(e) => onChangeZoom(Number(e.target.value) / 100)}
+        style={{ width: 120 }}
+      />
+      <span style={{ fontSize: 13, minWidth: 42 }}>{Math.round(zoom * 100)}%</span>
+      {viewMode === "bust" && (
+        <>
+          <button
+            onClick={isSettingDefault ? onConfirmSetDefault : onStartSetDefault}
+            style={{
+              background: isSettingDefault ? "#2ecc71" : "#3498db",
+              color: "#fff",
+              border: "none",
+              borderRadius: 6,
+              padding: "6px 10px",
+              cursor: "pointer"
+            }}
+          >
+            {isSettingDefault ? "OK" : "Set default"}
+          </button>
+          {isSettingDefault && (
             <button
-              onClick={isSettingDefault ? confirmSetDefault : startSetDefault}
+              onClick={onCancelSetDefault}
               style={{
-                background: isSettingDefault ? "#2ecc71" : "#3498db",
+                background: "#e74c3c",
                 color: "#fff",
                 border: "none",
                 borderRadius: 6,
@@ -587,165 +654,140 @@ model.internalModel?.focusController?.focus(0, 0, true);
                 cursor: "pointer"
               }}
             >
-              {isSettingDefault ? "OK" : "Set default"}
+              Hủy
             </button>
-            {isSettingDefault && (
-              <button
-                onClick={cancelSetDefault}
-                style={{
-                  background: "#e74c3c",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: 6,
-                  padding: "6px 10px",
-                  cursor: "pointer"
-                }}
-              >
-                Hủy
-              </button>
-            )}
-          </>
-        )}
-      </div>
-      {viewMode === "bust" && isSettingDefault && (
-        <>
-            <div
-              style={{
-                position: "absolute",
-                left: "50%",
-                top: "50%",
-                transform: `translate(-50%, -50%) translate(${(draftConfig ?? activeBustConfig).headOffsetX}px, ${(draftConfig ?? activeBustConfig).headOffsetY}px)`,
-                pointerEvents: "none",
-                zIndex: 9,
-                width: 18,
-                height: 18
-              }}
-            ref={crosshairRef}
-          >
-            <div
-              style={{
-                position: "absolute",
-                left: "50%",
-                top: 0,
-                bottom: 0,
-                width: 1,
-                transform: "translateX(-50%)",
-                background: "rgba(0, 200, 255, 0.9)"
-              }}
-            />
-            <div
-              style={{
-                position: "absolute",
-                top: "50%",
-                left: 0,
-                right: 0,
-                height: 1,
-                transform: "translateY(-50%)",
-                background: "rgba(0, 200, 255, 0.9)"
-              }}
-            />
-          </div>
-          <div
-            style={{
-              position: "absolute",
-              left: "50%",
-              top: "50%",
-              transform: `translate(-50%, -50%) translate(${(draftConfig ?? activeBustConfig).headOffsetX}px, ${(draftConfig ?? activeBustConfig).headOffsetY}px)`,
-              width: ((draftConfig ?? activeBustConfig).trackRadius || DEFAULT_BUST_CONFIG.trackRadius) * 2,
-              height: ((draftConfig ?? activeBustConfig).trackRadius || DEFAULT_BUST_CONFIG.trackRadius) * 2,
-              borderRadius: "50%",
-              border: "1px dashed rgba(0, 200, 255, 0.6)",
-              pointerEvents: "none",
-              zIndex: 8,
-              boxSizing: "border-box"
-            }}
-          />
-          <div
-            style={{
-              position: "absolute",
-              bottom: 12,
-              left: "50%",
-            transform: "translateX(-50%)",
-            background: "rgba(0,0,0,0.6)",
-            color: "#fff",
-            padding: "10px 14px",
-            borderRadius: 10,
-            fontSize: 13,
-            display: "flex",
-            gap: 12,
-            alignItems: "center"
-          }}
-        >
-          <span>Chế độ đặt mặc định (Bán thân)</span>
-          <span>Cuộn chuột: chỉnh scale</span>
-          <span>Kéo lên/xuống: chỉnh phần hiển thị</span>
-          <span>
-            Scale: {draftConfig?.scale.toFixed(2) ?? activeBustConfig.scale.toFixed(2)} | Visible:{" "}
-            {(draftConfig?.visibleFraction ?? activeBustConfig.visibleFraction).toFixed(2)} | OffsetY:{" "}
-            {Math.round(draftConfig?.offsetY ?? activeBustConfig.offsetY)} | Radius:{" "}
-            {Math.round(draftConfig?.trackRadius ?? activeBustConfig.trackRadius)}
-          </span>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span>Head X:</span>
-            <input
-              type="range"
-              min={-400}
-              max={400}
-              step={5}
-              value={draftConfig?.headOffsetX ?? activeBustConfig.headOffsetX}
-              onChange={(e) =>
-                setDraftConfig((prev) =>
-                  prev ? { ...prev, headOffsetX: Number(e.target.value) } : prev
-                )
-              }
-              style={{ width: 120 }}
-            />
-            <span style={{ minWidth: 40, textAlign: "right" }}>
-              {draftConfig?.headOffsetX ?? activeBustConfig.headOffsetX}
-            </span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span>Head Y:</span>
-            <input
-              type="range"
-              min={-400}
-              max={400}
-              step={5}
-              value={draftConfig?.headOffsetY ?? activeBustConfig.headOffsetY}
-              onChange={(e) =>
-                setDraftConfig((prev) =>
-                  prev ? { ...prev, headOffsetY: Number(e.target.value) } : prev
-                )
-              }
-              style={{ width: 120 }}
-            />
-            <span style={{ minWidth: 40, textAlign: "right" }}>
-              {draftConfig?.headOffsetY ?? activeBustConfig.headOffsetY}
-            </span>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span>Head Radius:</span>
-            <input
-              type="range"
-              min={60}
-              max={500}
-              step={5}
-              value={draftConfig?.trackRadius ?? activeBustConfig.trackRadius}
-              onChange={(e) =>
-                setDraftConfig((prev) =>
-                  prev ? { ...prev, trackRadius: Number(e.target.value) } : prev
-                )
-              }
-              style={{ width: 140 }}
-            />
-            <span style={{ minWidth: 46, textAlign: "right" }}>
-              {draftConfig?.trackRadius ?? activeBustConfig.trackRadius}
-            </span>
-          </div>
-        </div>
+          )}
         </>
       )}
-      <div ref={canvasRef} style={{ width: "100%", height: "100%" }} />
     </div>
+  );
+}
+
+type BustEditorOverlayProps = {
+  config: BustConfig;
+  crosshairRef: RefObject<HTMLDivElement | null>;
+  onChangeConfig: (partial: Partial<BustConfig>) => void;
+};
+
+function BustEditorOverlay({ config, crosshairRef, onChangeConfig }: BustEditorOverlayProps) {
+  const { headOffsetX, headOffsetY, trackRadius, scale, visibleFraction, offsetY } = config;
+
+  return (
+    <>
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          transform: `translate(-50%, -50%) translate(${headOffsetX}px, ${headOffsetY}px)`,
+          pointerEvents: "none",
+          zIndex: 9,
+          width: 18,
+          height: 18
+        }}
+        ref={crosshairRef}
+      >
+        <div
+          style={{
+            position: "absolute",
+            left: "50%",
+            top: 0,
+            bottom: 0,
+            width: 1,
+            transform: "translateX(-50%)",
+            background: "rgba(0, 200, 255, 0.9)"
+          }}
+        />
+        <div
+          style={{
+            position: "absolute",
+            top: "50%",
+            left: 0,
+            right: 0,
+            height: 1,
+            transform: "translateY(-50%)",
+            background: "rgba(0, 200, 255, 0.9)"
+          }}
+        />
+      </div>
+      <div
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          transform: `translate(-50%, -50%) translate(${headOffsetX}px, ${headOffsetY}px)`,
+          width: (trackRadius || DEFAULT_BUST_CONFIG.trackRadius) * 2,
+          height: (trackRadius || DEFAULT_BUST_CONFIG.trackRadius) * 2,
+          borderRadius: "50%",
+          border: "1px dashed rgba(0, 200, 255, 0.6)",
+          pointerEvents: "none",
+          zIndex: 8,
+          boxSizing: "border-box"
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          bottom: 12,
+          left: "50%",
+          transform: "translateX(-50%)",
+          background: "rgba(0,0,0,0.6)",
+          color: "#fff",
+          padding: "10px 14px",
+          borderRadius: 10,
+          fontSize: 13,
+          display: "flex",
+          gap: 12,
+          alignItems: "center"
+        }}
+      >
+        <span>Chế độ đặt mặc định (Bán thân)</span>
+        <span>Cuộn chuột: chỉnh scale</span>
+        <span>Kéo lên/xuống: chỉnh phần hiển thị</span>
+        <span>
+          Scale: {scale.toFixed(2)} | Visible: {visibleFraction.toFixed(2)} | OffsetY:{" "}
+          {Math.round(offsetY)} | Radius: {Math.round(trackRadius)}
+        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span>Head X:</span>
+          <input
+            type="range"
+            min={-400}
+            max={400}
+            step={5}
+            value={headOffsetX}
+            onChange={(e) => onChangeConfig({ headOffsetX: Number(e.target.value) })}
+            style={{ width: 120 }}
+          />
+          <span style={{ minWidth: 40, textAlign: "right" }}>{headOffsetX}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span>Head Y:</span>
+          <input
+            type="range"
+            min={-400}
+            max={400}
+            step={5}
+            value={headOffsetY}
+            onChange={(e) => onChangeConfig({ headOffsetY: Number(e.target.value) })}
+            style={{ width: 120 }}
+          />
+          <span style={{ minWidth: 40, textAlign: "right" }}>{headOffsetY}</span>
+        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          <span>Head Radius:</span>
+          <input
+            type="range"
+            min={60}
+            max={500}
+            step={5}
+            value={trackRadius}
+            onChange={(e) => onChangeConfig({ trackRadius: Number(e.target.value) })}
+            style={{ width: 140 }}
+          />
+          <span style={{ minWidth: 46, textAlign: "right" }}>{trackRadius}</span>
+        </div>
+      </div>
+    </>
   );
 }
