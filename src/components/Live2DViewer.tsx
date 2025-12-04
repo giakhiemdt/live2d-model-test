@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import type { MouseEvent as ReactMouseEvent, WheelEvent as ReactWheelEvent } from "react";
 import * as PIXI from "pixi.js";
 import { Ticker } from "@pixi/ticker";
-import { setHappyEmotion, setNeutralEmotion } from "../modules/emotions";
+import { playHappyEmotion, playSadEmotion, setNeutralEmotion } from "../modules/emotions";
 import { createBlinkAnimator, createGazeAnimator } from "../modules/animation";
 
 type Live2DModelType = typeof import("pixi-live2d-display/lib/cubism4").Live2DModel;
@@ -17,7 +17,7 @@ type BustConfig = {
 };
 
 type ViewMode = "bust" | "full";
-type EmotionId = "neutral" | "happy";
+type EmotionId = "neutral" | "happy" | "sad";
 type EmotionOption = { id: EmotionId; label: string };
 
 const DEFAULT_BUST_CONFIG: BustConfig = {
@@ -28,12 +28,14 @@ const DEFAULT_BUST_CONFIG: BustConfig = {
   headOffsetY: 0,
   trackRadius: 240
 };
-const CONFIG_STORAGE_KEY = "live2d-bust-config";
+const CONFIG_API_URL = "/api/config";
+const CONFIG_FILE_URL = "/model/config.json";
 
 const clamp = (value: number, min: number, max: number) => Math.min(Math.max(value, min), max);
 const EMOTION_OPTIONS: EmotionOption[] = [
   { id: "neutral", label: "Neutral" },
-  { id: "happy", label: "Happy" }
+  { id: "happy", label: "Happy" },
+  { id: "sad", label: "Sad" }
 ];
 
 declare global {
@@ -44,9 +46,9 @@ declare global {
 
 export default function Live2DViewer() {
   const [modelOptions, setModelOptions] = useState<ModelOption[]>([
-    { name: "jingliu", url: "/model/jingliu/jingliu.model3.json" }
+    { name: "长离带水印", url: "/model/长离带水印/长离.model3.json" }
   ]);
-  const [selectedModel, setSelectedModel] = useState("/model/jingliu/jingliu.model3.json");
+  const [selectedModel, setSelectedModel] = useState("/model/长离带水印/长离.model3.json");
   const [viewMode, setViewMode] = useState<ViewMode>("bust");
   const [modelConfigs, setModelConfigs] = useState<Record<string, BustConfig>>({});
   const [isSettingDefault, setIsSettingDefault] = useState(false);
@@ -100,7 +102,9 @@ export default function Live2DViewer() {
     if (emotion === "neutral") {
       setNeutralEmotion(model);
     } else if (emotion === "happy") {
-      setHappyEmotion(model);
+      playHappyEmotion(model);
+    } else if (emotion === "sad") {
+      playSadEmotion(model);
     }
   };
 
@@ -158,14 +162,23 @@ export default function Live2DViewer() {
     return normalizeConfig(modelConfigs[selectedModel]);
   }, [draftConfig, isSettingDefault, modelConfigs, selectedModel]);
 
-  const persistConfigs = (nextConfigs: Record<string, BustConfig>) => {
-    setModelConfigs(nextConfigs);
+  const saveConfigsToFile = async (configs: Record<string, BustConfig>) => {
     try {
-      localStorage.setItem(CONFIG_STORAGE_KEY, JSON.stringify(nextConfigs));
+      const res = await fetch(CONFIG_API_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(configs)
+      });
+      if (!res.ok) throw new Error(`Save failed: ${res.status}`);
     } catch (err) {
       // eslint-disable-next-line no-console
-      console.warn("Không lưu được config xuống localStorage.", err);
+      console.warn("Không lưu được config xuống file.", err);
     }
+  };
+
+  const persistConfigs = (nextConfigs: Record<string, BustConfig>) => {
+    setModelConfigs(nextConfigs);
+    void saveConfigsToFile(nextConfigs);
   };
 
   useEffect(() => {
@@ -196,31 +209,41 @@ export default function Live2DViewer() {
 
   useEffect(() => {
     const loadConfig = async () => {
-      let fileConfig: Record<string, BustConfig> = {};
+      const parseConfig = (data: unknown) =>
+        data && typeof data === "object" ? (data as Record<string, BustConfig>) : {};
+
+      const fetchConfigFromApi = async () => {
+        const res = await fetch(CONFIG_API_URL, { cache: "no-store" });
+        if (!res.ok) throw new Error(`API status ${res.status}`);
+        const parsed = await res.json();
+        return parseConfig(parsed);
+      };
+
+      const fetchConfigFromFile = async () => {
+        const res = await fetch(CONFIG_FILE_URL, { cache: "no-store" });
+        if (!res.ok) throw new Error("config file not found");
+        const parsed = await res.json();
+        return parseConfig(parsed);
+      };
+
+      let loadedConfig: Record<string, BustConfig> = {};
       try {
-        const res = await fetch("/model/config.json", { cache: "no-store" });
-        if (res.ok) {
-          const parsed = await res.json();
-          if (parsed && typeof parsed === "object") fileConfig = parsed;
+        loadedConfig = await fetchConfigFromApi();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.warn("Không đọc được config qua API, thử file tĩnh.", err);
+        try {
+          loadedConfig = await fetchConfigFromFile();
+        } catch (fileErr) {
+          // eslint-disable-next-line no-console
+          console.warn("Không đọc được config.json, dùng config mặc định.", fileErr);
         }
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn("Không đọc được config.json, dùng config mặc định.", err);
       }
 
-      let localConfig: Record<string, BustConfig> = {};
-      try {
-        const raw = localStorage.getItem(CONFIG_STORAGE_KEY);
-        if (raw) localConfig = JSON.parse(raw);
-      } catch (err) {
-        // eslint-disable-next-line no-console
-        console.warn("Không đọc được config từ localStorage.", err);
-      }
-
-      setModelConfigs({ ...fileConfig, ...localConfig });
+      setModelConfigs(loadedConfig);
     };
 
-    loadConfig();
+    void loadConfig();
   }, []);
 
   useEffect(() => {
