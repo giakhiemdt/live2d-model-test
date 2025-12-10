@@ -69,7 +69,7 @@ export const createBlinkAnimator = () => {
   };
 
   return {
-    update(model: Live2DModelLike, delta: number): number {
+    update(model: Live2DModelLike, _delta: number): number {
       if (!model || model._destroyed) return 1;
       const core = model.internalModel?.coreModel;
       const now = performance.now();
